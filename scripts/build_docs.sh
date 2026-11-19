@@ -5,7 +5,18 @@
 set -euo pipefail
 
 # Build HTML documentation for the project
-# The output will be located in docs/docs
+# The output will be located in $HOMEPAGE/docs
+#
+# Run this script from the root of the repository. `LAKE_PACKAGE_DIRECTORY`
+# names the directory of the Lake package, relative to the root of the
+# repository (default: `.`). `HOMEPAGE` and `REFERENCES` are also relative to
+# the root of the repository.
+
+LAKE_PACKAGE_DIRECTORY=${LAKE_PACKAGE_DIRECTORY:-.}
+if [[ ! -d $LAKE_PACKAGE_DIRECTORY ]]; then
+    echo "Error: the Lake package directory '$LAKE_PACKAGE_DIRECTORY' does not exist" >&2
+    exit 1
+fi
 
 # Determine the `doc-gen4` revision to use as a dependency,
 # based on the `lean-toolchain` of this project:
@@ -17,13 +28,13 @@ determine_doc_gen_rev() {
     
     # We are going to use the toolchain file to determine the revision,
     # or fall back to the `main` branch.
-    if [[ ! -f "lean-toolchain" ]]; then
+    if [[ ! -f "$LAKE_PACKAGE_DIRECTORY/lean-toolchain" ]]; then
         echo "Warning: lean-toolchain file not found, falling back to main branch" >&2
         echo "main"
         return 0
     fi
     
-    toolchain_content=$(< lean-toolchain)
+    toolchain_content=$(< "$LAKE_PACKAGE_DIRECTORY/lean-toolchain")
     
     # Split on repository name and revision.
     toolchain_repository=$(echo "$toolchain_content" | cut -f1 -d:)
@@ -53,18 +64,55 @@ determine_doc_gen_rev() {
     return 0
 }
 
+warn() {
+    if [[ ${GITHUB_ACTIONS:-} == true ]]; then
+        echo "::warning::$*"
+    else
+        echo "Warning: $*" >&2
+    fi
+}
+
+# doc-gen4 links each declaration to `<remote>/blob/<commit>/<path>`, where
+# `<path>` is the directory of the Lake package relative to the root of the
+# Git repository. If the configuration of the package is a symlink, as in a
+# repository that links a nested package into its root, these links name the
+# symlinks, and GitHub shows the target paths instead of the sources.
+for config_file in lakefile.toml lakefile.lean; do
+    if [[ -L $LAKE_PACKAGE_DIRECTORY/$config_file ]]; then
+        warn "$LAKE_PACKAGE_DIRECTORY/$config_file is a symlink to" \
+            "$(readlink "$LAKE_PACKAGE_DIRECTORY/$config_file"), so the source" \
+            "links of the documentation will name symlinks. Set the" \
+            "lake-package-directory input to the directory of the target, and" \
+            "pass the same directory to leanprover/lean-action."
+    fi
+done
+
 # Create a temporary docbuild folder
 mkdir -p docbuild
+
+# The path of the Lake package relative to `docbuild`. Lake resolves the paths
+# in `docbuild/lakefile.toml` relative to `docbuild`. doc-gen4 computes the
+# paths of the source links from this path, so it must name the real directory
+# of the package and not a symlink to it.
+PACKAGE_PATH=$(realpath --relative-to=docbuild "$LAKE_PACKAGE_DIRECTORY")
+
+# Use the toolchain of the package. The root of the repository may have no
+# `lean-toolchain` if the package is in a subdirectory.
+if [[ -f $LAKE_PACKAGE_DIRECTORY/lean-toolchain ]]; then
+    cp "$LAKE_PACKAGE_DIRECTORY/lean-toolchain" docbuild/lean-toolchain
+fi
 
 # Determine the doc-gen4 revision
 DOC_GEN_REV=$(determine_doc_gen_rev)
 
 # Template lakefile.toml
+# Share the dependencies that leanprover/lean-action fetched and built in the
+# package directory.
 cat << EOF > docbuild/lakefile.toml
 name = "docbuild"
 reservoir = false
 version = "0.1.0"
-packagesDir = "../.lake/packages"
+packagesDir = "$PACKAGE_PATH/.lake/packages"
 
 [[require]]
 scope = "leanprover"
@@ -73,20 +121,20 @@ rev = "$DOC_GEN_REV"
 
 [[require]]
 name = "$NAME"
-path = "../"
+path = "$PACKAGE_PATH"
 EOF
 
 # Initialise docbuild as a Lean project
 cd docbuild
 
 # Place references.bib in the location expected by doc-gen4
-if [ -f ../$REFERENCES ]; then
+if [ -f "../$REFERENCES" ]; then
   mkdir -p docs
-  cp ../$REFERENCES ./docs/references.bib
+  cp "../$REFERENCES" ./docs/references.bib
 fi
 
 # Disable an error message due to a non-blocking bug. See Zulip
-MATHLIB_NO_CACHE_ON_UPDATE=1 ~/.elan/bin/lake update $NAME
+MATHLIB_NO_CACHE_ON_UPDATE=1 ~/.elan/bin/lake update "$NAME"
 
 # Delete the HTML markers of `doc-gen4`, so that its HTML pass runs on every
 # build. The `:docs` facet writes `<target>.docs_built` in
@@ -100,11 +148,11 @@ rm -f .lake/build/doc-data/*.docs_built
 
 # Copy documentation to `$HOMEPAGE/docs`
 cd ../
-mkdir -p $HOMEPAGE
+mkdir -p "$HOMEPAGE"
 # On a GitHub runner, the blueprint step writes to `$HOMEPAGE` from a Docker
 # container as root. Give the files to the `runner` user, so that the copy below
 # can write there.
 if [[ ${GITHUB_ACTIONS:-} == true ]]; then
-    sudo chown -R runner $HOMEPAGE
+    sudo chown -R runner "$HOMEPAGE"
 fi
-cp -r docbuild/.lake/build/doc $HOMEPAGE/docs
+cp -r docbuild/.lake/build/doc "$HOMEPAGE/docs"

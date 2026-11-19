@@ -80,8 +80,12 @@ This parameter determines what to pass to the `build-args` argument of https://g
 
 Default value: `.`
 
-The directory containing the Lake package to build.
-This parameter is also passed as the `lake-package-directory` argument of https://github.com/leanprover/lean-action.
+The directory containing the Lake package to build, relative to the root of the repository.
+Pass the same directory as the `lake-package-directory` input of https://github.com/leanprover/lean-action, so that the documentation build reuses the dependencies and the build of that step.
+The `homepage` and `references` inputs stay relative to the root of the repository.
+
+The source links of the API documentation point to `<remote>/blob/<commit>/<lake-package-directory>/<module path>.lean`.
+If the root of your repository has symlinks to a package in a subdirectory (for example `lakefile.toml -> src/MyProject/lakefile.toml`), set this input to the subdirectory: with the default `.`, the source links point to the symlinks, which GitHub does not follow.
 
 ### input: `api-docs`
 
@@ -171,3 +175,16 @@ project. Then it runs two builds:
    that the restored cache alone does not produce the pages.
 2. The build script of the action. It must write the pages of the project, the
    dependency and the Lean core. It must not analyze any of these modules again.
+
+## Testing the source links
+
+`npm run test:source-links` checks the source links of a Lake package in a
+subdirectory of the repository. It has the same requirements as the cache
+restore test, and also reads `LEAN_VERSION`.
+
+The test puts the project of the cache restore test in `packages/project`, links
+its files into the root of the repository with symlinks, and commits the
+repository with a GitHub remote. Then it runs the build script of the action
+with `LAKE_PACKAGE_DIRECTORY=packages/project`. The source links must point to
+`blob/<commit>/packages/project/...`, not to the symlinks in the root, and the
+build must reuse the build in the package directory.
